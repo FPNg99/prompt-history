@@ -1,0 +1,25 @@
+id = "prompt-history"
+name = "prompt-history"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Browse the prompts of a Claude Code session and re-read the report for each one; Enter opens it in nvim."
+platforms = ["macos", "linux"]
+
+# Bind this to a key. It finds the Claude session in the focused pane and
+# opens the viewer below for it, via `herdr plugin pane open`.
+[[actions]]
+id = "open"
+title = "prompt history: open"
+contexts = ["pane"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" open"]
+
+# The popup: prompt list on the left, the selected prompt's report on the
+# right. The session comes in PH_SESSION_ID, set by the open action.
+[[panes]]
+id = "viewer"
+title = "prompt history"
+placement = "popup"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" view"]
+
+[[build]]
+command = ["bash", "herdr/install.sh"]
