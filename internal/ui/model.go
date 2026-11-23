@@ -41,6 +41,7 @@ const (
 	wideFrom    = 100
 	rowLines    = 2
 	wheelLines  = 3
+	searchLines = 2 // the search line and the rule under it, atop the list
 )
 
 type pane int
@@ -296,8 +297,9 @@ func (m *model) updateMouse(msg tea.MouseMsg) {
 		}
 	case tea.MouseButtonLeft:
 		m.focus = target
-		// Rows start under the header line and the box's top border.
-		if row := msg.Y - 2; target == paneList && row >= 0 {
+		// Rows start under the header line, the box's top border and the
+		// search line with its rule.
+		if row := msg.Y - 2 - searchLines; target == paneList && row >= 0 {
 			if i := m.top + row/rowLines; i < len(m.shown) {
 				m.cursor = i
 				m.syncReport(false)
@@ -422,10 +424,12 @@ func (m *model) layout() {
 	// Inside the border, one column of padding on each side.
 	m.vp.Width = max(m.reportWidth()-4, 10)
 	m.vp.Height = max(m.bodyHeight()-2, 1)
+	// The list's inner width, less the input's prompt and cursor.
+	m.filter.Width = max(m.listWidth()-2-4, 5)
 }
 
 func (m *model) listRows() int {
-	return max((m.bodyHeight()-2)/rowLines, 1)
+	return max((m.bodyHeight()-2-searchLines)/rowLines, 1)
 }
 
 // ---- report ----
@@ -567,9 +571,6 @@ func (m *model) headerView() string {
 		count = fmt.Sprintf("%d of %s", len(m.shown), count)
 	}
 	left += dim.Render(" · " + count)
-	if q := m.filter.Value(); q != "" && !m.filtering {
-		left += accentText.Render(" · filter: " + q)
-	}
 	right := ""
 	switch {
 	case m.loadErr != nil:
@@ -587,7 +588,7 @@ func (m *model) headerView() string {
 
 func (m *model) footerView() string {
 	if m.filtering {
-		return " " + m.filter.View()
+		return " " + dim.Render("type to filter · enter keep the filter · esc clear it")
 	}
 	if m.flash != "" && time.Now().Before(m.flashUntil) {
 		return " " + accentText.Render(m.flash)
@@ -599,13 +600,28 @@ func (m *model) footerView() string {
 	return " " + dim.Render(runewidth.Truncate(keys, max(m.width-2, 1), "…"))
 }
 
+// searchView is the search line at the top of the list, with a rule under it.
+func (m *model) searchView(w int) string {
+	var line string
+	switch {
+	case m.filtering:
+		line = " " + m.filter.View()
+	case m.filter.Value() != "":
+		line = " " + accentText.Render(runewidth.Truncate("/"+m.filter.Value(), w-2, "…"))
+	default:
+		line = " " + dim.Render(runewidth.Truncate("/ to filter prompts", w-2, "…"))
+	}
+	return line + "\n" + dim.Render(strings.Repeat("─", w))
+}
+
 func (m *model) listView() string {
 	w := m.listWidth() - 2
+	search := m.searchView(w) + "\n"
 	if len(m.shown) == 0 {
 		if len(m.all) == 0 {
-			return dim.Render(" No prompts in this session yet.")
+			return search + dim.Render(" No prompts in this session yet.")
 		}
-		return dim.Render(" No prompt matches the filter.")
+		return search + dim.Render(" No prompt matches the filter.")
 	}
 	rows := m.listRows()
 	if m.cursor < m.top {
@@ -653,7 +669,7 @@ func (m *model) listView() string {
 			lines = append(lines, mark+head, mark+dim.Render(sub))
 		}
 	}
-	return strings.Join(lines, "\n")
+	return search + strings.Join(lines, "\n")
 }
 
 func (m *model) reportView() string {
