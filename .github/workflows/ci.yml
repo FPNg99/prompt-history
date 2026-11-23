@@ -1,0 +1,99 @@
+name: CI
+
+# Pull requests are tested. A merge to main is tested, then published: the
+# binaries are built and attached to the GitHub release for the version in
+# herdr-plugin.toml, which is where herdr/install.sh downloads them from.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt on:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build ./...
+
+  publish:
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read the version from the manifest
+        id: version
+        run: |
+          version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' herdr-plugin.toml | head -1)"
+          if [ -z "$version" ]; then
+            echo "No version found in herdr-plugin.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build the binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="prompt-history-v${VERSION}-${os}-${arch}"
+            mkdir -p "build/$name"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w" \
+              -o "build/$name/prompt-history" ./cmd/prompt-history
+            tar -czf "dist/$name.tar.gz" -C "build/$name" prompt-history
+            (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          done
+          ls -l dist
+
+      # A plugin install clones the head of main and downloads the binary
+      # for the manifest's version, so that release must always hold a build
+      # of the head of main. A new version gets a new release; a merge that
+      # keeps the version replaces the binaries of the current one.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            git tag -f "$TAG" "$GITHUB_SHA"
+            git push -f origin "refs/tags/$TAG"
+            gh release upload "$TAG" dist/* --clobber
+            echo "Updated the binaries of release $TAG to $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh release create "$TAG" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --generate-notes
+            echo "Created release $TAG from $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          fi
