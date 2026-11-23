@@ -26,6 +26,7 @@ type Options struct {
 	SessionID string
 	PaneID    string // the Claude pane, for its working status; may be ""
 	Tab       bool   // shown in a tab of its own, not a popup
+	Title     string // the Claude session's name, shown in the header
 	Config    Config
 	Dark      bool // the terminal has a dark background
 }
@@ -674,6 +675,9 @@ func (m *model) View() string {
 
 func (m *model) headerView() string {
 	left := " " + bold.Render("Prompt history")
+	if m.opt.Title != "" {
+		left += accentText.Render(" · " + runewidth.Truncate(m.opt.Title, max(m.width/3, 12), "…"))
+	}
 	count := plural(len(m.all), "prompt")
 	if len(m.shown) != len(m.all) {
 		count = fmt.Sprintf("%d of %s", len(m.shown), count)

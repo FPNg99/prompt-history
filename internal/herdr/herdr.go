@@ -22,6 +22,7 @@ type Pane struct {
 	Status    string // idle, working, blocked, done, unknown
 	Cwd       string
 	SessionID string // the agent's own session id, when Herdr has learned it
+	Title     string // the terminal title, which Claude Code sets to the session's name
 }
 
 func bin() string {
@@ -37,13 +38,14 @@ type rawPane struct {
 	Agent        string `json:"agent"`
 	AgentStatus  string `json:"agent_status"`
 	Cwd          string `json:"cwd"`
+	Title        string `json:"terminal_title_stripped"`
 	AgentSession *struct {
 		Value string `json:"value"`
 	} `json:"agent_session"`
 }
 
 func (r rawPane) pane() Pane {
-	p := Pane{ID: r.PaneID, TabID: r.TabID, Agent: r.Agent, Status: r.AgentStatus, Cwd: r.Cwd}
+	p := Pane{ID: r.PaneID, TabID: r.TabID, Agent: r.Agent, Status: r.AgentStatus, Cwd: r.Cwd, Title: strings.TrimSpace(r.Title)}
 	if r.AgentSession != nil {
 		p.SessionID = r.AgentSession.Value
 	}
@@ -185,6 +187,13 @@ func FocusPluginPane(paneID string) error {
 		return fmt.Errorf("herdr plugin pane focus: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// FocusTab switches to a tab.
+func FocusTab(tabID string) {
+	if tabID != "" {
+		_ = exec.Command(bin(), "tab", "focus", tabID).Run()
+	}
 }
 
 // RenameTab sets a tab's label.

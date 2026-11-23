@@ -71,6 +71,22 @@ func tabRecord(sessionID string) string {
 	return filepath.Join(root, "tabs", sessionID+".pane")
 }
 
+// sessionName is a short name for the Claude session in a pane: the title
+// Claude Code gave it, else the start of its id.
+func sessionName(pane herdr.Pane) string {
+	name := pane.Title
+	if name == "" || strings.EqualFold(name, "claude") || strings.EqualFold(name, "claude code") {
+		name = "session " + clip(pane.SessionID, 9)
+	}
+	return name
+}
+
+// tabLabel names the viewer tab after the session it shows, so several
+// history tabs can be told apart.
+func tabLabel(pane herdr.Pane) string {
+	return "history: " + clip(sessionName(pane), 40)
+}
+
 // runOpen is the plugin action. Problems are shown as a Herdr notification,
 // since an action has no terminal of its own.
 func runOpen(placement string) error {
@@ -115,7 +131,12 @@ func runOpen(placement string) error {
 		// this session's viewer tab.
 		if raw, err := os.ReadFile(record); err == nil {
 			if id := strings.TrimSpace(string(raw)); id != "" {
-				if _, err := herdr.GetPane(id); err == nil && herdr.FocusPluginPane(id) == nil {
+				if viewer, err := herdr.GetPane(id); err == nil {
+					// The session may have been renamed since the tab opened.
+					herdr.RenameTab(viewer.TabID, tabLabel(pane))
+					// Switch to its tab explicitly, then put focus on the pane.
+					herdr.FocusTab(viewer.TabID)
+					_ = herdr.FocusPluginPane(id)
 					return nil
 				}
 			}
@@ -125,13 +146,17 @@ func runOpen(placement string) error {
 		"PH_SESSION_ID": pane.SessionID,
 		"PH_PANE_ID":    pane.ID,
 		"PH_PLACEMENT":  placement,
+		"PH_TITLE":      sessionName(pane),
 	})
 	if err != nil {
 		return fail(err.Error())
 	}
 	if placement == herdr.PlaceTab && paneID != "" {
 		if tabID != "" {
-			herdr.RenameTab(tabID, "prompt-history")
+			herdr.RenameTab(tabID, tabLabel(pane))
+			// Opening with --focus should already land here; switching
+			// explicitly makes sure the key always ends on the new tab.
+			herdr.FocusTab(tabID)
 		}
 		if os.MkdirAll(filepath.Dir(record), 0o700) == nil {
 			_ = os.WriteFile(record, []byte(paneID+"\n"), 0o600)
@@ -182,6 +207,7 @@ func runView(args []string) error {
 		Path:      path,
 		SessionID: sessionID,
 		PaneID:    *pane,
+		Title:     os.Getenv("PH_TITLE"),
 		Tab:       os.Getenv("PH_PLACEMENT") == herdr.PlaceTab,
 		Config:    ui.LoadConfig(),
 		Dark:      lipgloss.HasDarkBackground(),

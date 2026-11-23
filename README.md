@@ -51,7 +51,7 @@ description = "prompt history tab"
 There are two ways to open it:
 
 - **Popup** (`prompt-history.open`): floats over the current tab for a quick look; `q` or `esc` closes it.
-- **Tab** (`prompt-history.open-tab`): a tab of its own, labelled `prompt-history`, that stays open so you can switch between Claude and the history. Pressing the key again goes back to the tab already open for that session. `q` closes it; `esc` does not.
+- **Tab** (`prompt-history.open-tab`): a tab of its own, labelled `history: <session name>` after the Claude session it shows, that stays open so you can switch between Claude and the history. Pressing the key again goes back to the tab already open for that session. `q` closes it; `esc` does not.
 
 Both open the history of the Claude pane you are focused on. If focus is on a neighbour, such as an editor sidebar, it uses the tab's Claude pane when there is exactly one.
 
