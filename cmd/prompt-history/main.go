@@ -1,4 +1,4 @@
-// herdr-prompt-history lists the prompts of a Claude Code session and shows
+// prompt-history lists the prompts of a Claude Code session and shows
 // the report Claude gave for each one. It runs as a Herdr plugin.
 //
 //	open      the plugin action: find the focused pane's Claude session and
@@ -19,9 +19,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"herdr-prompt-history/internal/herdr"
-	"herdr-prompt-history/internal/transcript"
-	"herdr-prompt-history/internal/ui"
+	"prompt-history/internal/herdr"
+	"prompt-history/internal/transcript"
+	"prompt-history/internal/ui"
 )
 
 const title = "Prompt history"
@@ -48,16 +48,16 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "herdr-prompt-history:", err)
+		fmt.Fprintln(os.Stderr, "prompt-history:", err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
-  herdr-prompt-history open | open-tab
-  herdr-prompt-history view [--session ID | --file PATH] [--pane PANE_ID]
-  herdr-prompt-history dump [--session ID | --file PATH] [--report N [--part K | --full]]
+  prompt-history open | open-tab
+  prompt-history view [--session ID | --file PATH] [--pane PANE_ID]
+  prompt-history dump [--session ID | --file PATH] [--report N [--part K | --full]]
 `)
 }
 
@@ -66,7 +66,7 @@ func usage() {
 func tabRecord(sessionID string) string {
 	root := os.Getenv("HERDR_PLUGIN_STATE_DIR")
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "herdr-prompt-history")
+		root = filepath.Join(os.TempDir(), "prompt-history")
 	}
 	return filepath.Join(root, "tabs", sessionID+".pane")
 }
@@ -198,7 +198,7 @@ func runView(args []string) error {
 	path, sessionID, err := resolve(*session, *file)
 	if err != nil {
 		// The popup closes as soon as this exits: keep the reason on screen.
-		fmt.Fprintln(os.Stderr, "herdr-prompt-history:", err)
+		fmt.Fprintln(os.Stderr, "prompt-history:", err)
 		fmt.Fprint(os.Stderr, "\nPress Enter to close.")
 		fmt.Scanln()
 		return err

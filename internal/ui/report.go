@@ -11,7 +11,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"herdr-prompt-history/internal/transcript"
+	"prompt-history/internal/transcript"
 )
 
 // Config is the optional config.toml in the plugin's config directory.
@@ -227,7 +227,7 @@ func reportMarkdown(t *transcript.Turn, full bool, part int) string {
 func writeReport(sessionID string, t *transcript.Turn, full bool, part int) (string, error) {
 	root := os.Getenv("HERDR_PLUGIN_STATE_DIR")
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "herdr-prompt-history")
+		root = filepath.Join(os.TempDir(), "prompt-history")
 	}
 	if sessionID == "" {
 		sessionID = "session"

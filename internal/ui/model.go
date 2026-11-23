@@ -16,8 +16,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
-	"herdr-prompt-history/internal/herdr"
-	"herdr-prompt-history/internal/transcript"
+	"prompt-history/internal/herdr"
+	"prompt-history/internal/transcript"
 )
 
 // Options is what the viewer needs to start.

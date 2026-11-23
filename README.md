@@ -1,4 +1,4 @@
-# herdr-prompt-history
+# prompt-history
 
 A [Herdr](https://herdr.dev) plugin that lists every prompt you sent in a Claude Code session and shows the report Claude gave for each one. It opens as a popup over the Claude pane and never touches the chat itself.
 
@@ -29,7 +29,7 @@ Needs Herdr 0.9 or later and Go.
 
 ```sh
 herdr plugin link /path/to/this/repo   # local checkout
-bash herdr/install.sh                  # builds bin/herdr-prompt-history
+bash herdr/install.sh                  # builds bin/prompt-history
 ```
 
 Bind the action in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
@@ -96,10 +96,10 @@ Herdr knows the Claude session id of each pane. The plugin finds that session's 
 
 ```sh
 go test ./...
-go build -o bin/herdr-prompt-history ./cmd/herdr-prompt-history
-bin/herdr-prompt-history dump --session <id>              # prompt list as text
-bin/herdr-prompt-history dump --session <id> --report 2   # prompt 2's latest report
-bin/herdr-prompt-history dump --session <id> --report 2 --part 1   # its first report
-bin/herdr-prompt-history view --session <id>              # the viewer, in any terminal
+go build -o bin/prompt-history ./cmd/prompt-history
+bin/prompt-history dump --session <id>              # prompt list as text
+bin/prompt-history dump --session <id> --report 2   # prompt 2's latest report
+bin/prompt-history dump --session <id> --report 2 --part 1   # its first report
+bin/prompt-history view --session <id>              # the viewer, in any terminal
 herdr plugin log list --plugin prompt-history             # action logs
 ```

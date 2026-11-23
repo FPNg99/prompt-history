@@ -1,5 +1,5 @@
 #!/bin/sh
-# Launcher for herdr-prompt-history.
+# Launcher for prompt-history.
 #
 # Herdr runs plugin commands with a minimal PATH, so extend it with the usual
 # places nvim, pbcopy and herdr live (bob is a common nvim version manager).
@@ -9,10 +9,10 @@ PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.local/share
 export PATH
 
 root="${HERDR_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-bin="$root/bin/herdr-prompt-history"
+bin="$root/bin/prompt-history"
 
 if [ ! -x "$bin" ]; then
-  echo "herdr-prompt-history: binary not found, run herdr/install.sh (needs Go)" >&2
+  echo "prompt-history: binary not found, run herdr/install.sh (needs Go)" >&2
   exit 1
 fi
 exec "$bin" "$@"
