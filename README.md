@@ -25,10 +25,16 @@ A [Herdr](https://herdr.dev) plugin that lists every prompt you sent in a Claude
 
 ## Install
 
-Needs Herdr 0.9 or later and Go.
+Needs Herdr 0.9 or later, and [Go](https://go.dev/dl) to build it: the install step compiles the plugin on your machine, and Herdr does not install Go for you.
 
 ```sh
-herdr plugin link /path/to/this/repo   # local checkout
+herdr plugin install FPNg99/prompt-history
+```
+
+To work on it from a local checkout instead:
+
+```sh
+herdr plugin link /path/to/this/repo
 bash herdr/install.sh                  # builds bin/prompt-history
 ```
 

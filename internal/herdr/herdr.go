@@ -14,6 +14,15 @@ import (
 // PluginID is this plugin's id in herdr-plugin.toml.
 const PluginID = "prompt-history"
 
+// pluginID is the id Herdr runs this plugin under: it passes it to every
+// plugin command, so the manifest stays the single source of truth.
+func pluginID() string {
+	if id := os.Getenv("HERDR_PLUGIN_ID"); id != "" {
+		return id
+	}
+	return PluginID
+}
+
 // Pane is what Herdr knows about one pane.
 type Pane struct {
 	ID        string
@@ -134,7 +143,7 @@ const (
 func OpenViewer(placement string, env map[string]string) (paneID, tabID string, err error) {
 	args := []string{
 		"plugin", "pane", "open",
-		"--plugin", PluginID,
+		"--plugin", pluginID(),
 		"--entrypoint", "viewer",
 		"--placement", placement,
 		"--focus",
