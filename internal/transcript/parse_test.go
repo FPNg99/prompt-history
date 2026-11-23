@@ -98,6 +98,86 @@ func TestTurnDetails(t *testing.T) {
 	}
 }
 
+func TestReports(t *testing.T) {
+	turns := parseFixture(t)
+	reports := turns[0].Reports()
+	want := []struct {
+		text  string
+		tools int
+	}{
+		{"Looking at the login code.", 0},
+		{"Fixed the Safari bug.\n\nTests pass.", 2},
+	}
+	if len(reports) != len(want) {
+		t.Fatalf("got %d reports, want %d", len(reports), len(want))
+	}
+	for i, w := range want {
+		if reports[i].N != i+1 || reports[i].Text != w.text || reports[i].ToolsBefore != w.tools {
+			t.Errorf("report %d = %+v, want %q after %d tools", i, reports[i], w.text, w.tools)
+		}
+	}
+	if reports[1].Time.IsZero() {
+		t.Error("report has no time")
+	}
+	// A turn that ends on a tool call still has its text as the last report.
+	if got := turns[1].Reports(); len(got) != 1 || got[0].Text != "Adding one." {
+		t.Errorf("turn ending on a tool call: %+v", got)
+	}
+}
+
+func TestProgressUpdates(t *testing.T) {
+	lines := []string{
+		`{"type":"user","uuid":"u1","timestamp":"2026-01-02T10:00:00.000Z","message":{"content":"do it"}}`,
+		`{"type":"assistant","uuid":"a1","thinkingDisplay":"updates","timestamp":"2026-01-02T10:00:01.000Z","message":{"content":[{"type":"thinking","thinking":""}]}}`,
+		`{"type":"assistant","uuid":"a2","thinkingDisplay":"updates","timestamp":"2026-01-02T10:00:02.000Z","message":{"content":[{"type":"thinking","thinking":"Checking the config first.\n\n"}]}}`,
+		`{"type":"assistant","uuid":"a3","timestamp":"2026-01-02T10:00:03.000Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"assistant","uuid":"a4","thinkingDisplay":"summarized","timestamp":"2026-01-02T10:00:04.000Z","message":{"content":[{"type":"thinking","thinking":"private reasoning"}]}}`,
+		`{"type":"assistant","uuid":"a5","timestamp":"2026-01-02T10:00:05.000Z","message":{"model":"model-b","content":[{"type":"text","text":"Done."}]}}`,
+		`{"type":"assistant","uuid":"a6","timestamp":"2026-01-02T10:00:06.000Z","message":{"model":"<synthetic>","content":[{"type":"tool_use","name":"Bash","input":{}}]}}`,
+	}
+	p := NewParser()
+	for _, line := range lines {
+		p.Feed([]byte(line))
+	}
+	reports := p.Turns()[0].Reports()
+	if len(reports) != 2 || reports[0].Text != "Checking the config first." || reports[1].Text != "Done." {
+		t.Errorf("reports = %+v", reports)
+	}
+	if reports[0].Model != "" || reports[1].Model != "model-b" {
+		t.Errorf("models = %q, %q", reports[0].Model, reports[1].Model)
+	}
+	if got := p.Turns()[0].Model(); got != "model-b" {
+		t.Errorf("prompt model = %q", got)
+	}
+	if models := p.Turns()[0].Models(); len(models) != 1 || models[0] != "model-b" {
+		t.Errorf("turn models = %v", models)
+	}
+}
+
+func TestUsage(t *testing.T) {
+	usage := `"usage":{"input_tokens":2,"output_tokens":100,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50}`
+	lines := []string{
+		`{"type":"user","uuid":"u1","message":{"content":"do it"}}`,
+		// One API message stored as two entries: its usage counts once.
+		`{"type":"assistant","uuid":"a1","message":{"id":"m1","model":"model-a",` + usage + `,"content":[{"type":"thinking","thinking":""}]}}`,
+		`{"type":"assistant","uuid":"a2","message":{"id":"m1","model":"model-a",` + usage + `,"content":[{"type":"tool_use","name":"Bash","input":{}}]}}`,
+		`{"type":"assistant","uuid":"a3","message":{"id":"m2","model":"model-a",` + usage + `,"content":[{"type":"text","text":"Done."}]}}`,
+		`{"type":"assistant","uuid":"a4","message":{"id":"m3","model":"<synthetic>",` + usage + `,"content":[{"type":"text","text":"note"}]}}`,
+	}
+	p := NewParser()
+	for _, line := range lines {
+		p.Feed([]byte(line))
+	}
+	got := p.Turns()[0].Usage
+	want := Usage{Input: 4, Output: 200, CacheRead: 2000, CacheWrite: 100}
+	if got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+	if got.TotalInput() != 2104 || got.Total() != 2304 {
+		t.Errorf("totals = %d in, %d all", got.TotalInput(), got.Total())
+	}
+}
+
 func TestTailerFollowsAppends(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	lines := strings.Split(strings.TrimSpace(fixture), "\n")

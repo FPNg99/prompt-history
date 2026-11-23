@@ -56,6 +56,12 @@ func turnStats(t *transcript.Turn) string {
 	if n := len(t.Files); n > 0 {
 		parts = append(parts, plural(n, "file"))
 	}
+	if n := len(t.Reports()); n > 1 {
+		parts = append(parts, plural(n, "report"))
+	}
+	if n := t.Usage.Total(); n > 0 {
+		parts = append(parts, compact(n)+" tok")
+	}
 	if d := t.Duration(); d > 0 {
 		parts = append(parts, shortDuration(d))
 	}
@@ -63,6 +69,45 @@ func turnStats(t *transcript.Turn) string {
 		return "no answer yet"
 	}
 	return strings.Join(parts, " · ")
+}
+
+// listStats is the line under a prompt in the list: the model it was sent
+// to, then its stats.
+func listStats(t *transcript.Turn) string {
+	if model := shortModel(t.Model()); model != "" {
+		return model + " · " + turnStats(t)
+	}
+	return turnStats(t)
+}
+
+// compact writes a token count the short way: 950, 12.3k, 1.9M.
+func compact(n int) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 999_950:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1e3), ".0") + "k"
+	default:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1e6), ".0") + "M"
+	}
+}
+
+// tokenLine spells out a turn's token use, or "" when none is recorded.
+func tokenLine(t *transcript.Turn) string {
+	u := t.Usage
+	if u.Total() == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("tokens: %s in", compact(u.TotalInput()))
+	if u.CacheRead > 0 {
+		line += fmt.Sprintf(" (%s from cache)", compact(u.CacheRead))
+	}
+	return line + fmt.Sprintf(" · %s out", compact(u.Output))
+}
+
+// shortModel drops the vendor prefix, which every row would repeat.
+func shortModel(model string) string {
+	return strings.TrimPrefix(model, "claude-")
 }
 
 func plural(n int, word string) string {
@@ -96,17 +141,53 @@ func kindLabel(kind string) string {
 	return ""
 }
 
-// answerOf is the turn's answer in the chosen mode.
-func answerOf(t *transcript.Turn, full bool) string {
+// answerOf is what the report pane shows: the whole turn, or one of its
+// reports by index.
+func answerOf(t *transcript.Turn, full bool, part int) string {
 	if full {
 		return t.FullAnswer()
 	}
-	return t.FinalAnswer()
+	reports := t.Reports()
+	if part < 0 || part >= len(reports) {
+		return ""
+	}
+	return reports[part].Text
+}
+
+// modelOf is the model behind what the report pane shows: the picked
+// report's, or for the full turn every model that took part.
+func modelOf(t *transcript.Turn, full bool, part int) string {
+	if full {
+		return strings.Join(t.Models(), ", ")
+	}
+	reports := t.Reports()
+	if part < 0 || part >= len(reports) {
+		return ""
+	}
+	return reports[part].Model
+}
+
+// partLabel names the shown report, e.g. "report 2 of 5" or, for the last
+// one, "report 5 of 5 · latest".
+func partLabel(t *transcript.Turn, full bool, part int) string {
+	if full {
+		return "full turn"
+	}
+	total := len(t.Reports())
+	switch {
+	case total == 0:
+		return ""
+	case total == 1:
+		return "final answer"
+	case part == total-1:
+		return fmt.Sprintf("report %d of %d · latest", part+1, total)
+	}
+	return fmt.Sprintf("report %d of %d", part+1, total)
 }
 
 // reportMarkdown is the document a report opens as in the editor: the prompt
 // quoted on top, Claude's answer below.
-func reportMarkdown(t *transcript.Turn, full bool) string {
+func reportMarkdown(t *transcript.Turn, full bool, part int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Prompt #%d\n\n", t.N)
 	meta := []string{}
@@ -116,16 +197,25 @@ func reportMarkdown(t *transcript.Turn, full bool) string {
 	if label := kindLabel(t.Kind); label != "" {
 		meta = append(meta, label)
 	}
+	if model := t.Model(); model != "" {
+		meta = append(meta, "prompted with "+model)
+	}
 	meta = append(meta, turnStats(t))
-	if full {
-		meta = append(meta, "full turn")
+	if tokens := tokenLine(t); tokens != "" {
+		meta = append(meta, tokens)
+	}
+	if label := partLabel(t, full, part); label != "" {
+		meta = append(meta, label)
+	}
+	if model := modelOf(t, full, part); model != "" {
+		meta = append(meta, model)
 	}
 	b.WriteString(strings.Join(meta, " · ") + "\n\n")
 	for _, line := range strings.Split(t.Prompt, "\n") {
 		b.WriteString("> " + line + "\n")
 	}
 	b.WriteString("\n---\n\n")
-	answer := answerOf(t, full)
+	answer := answerOf(t, full, part)
 	if strings.TrimSpace(answer) == "" {
 		answer = "_No answer yet._"
 	}
@@ -134,7 +224,7 @@ func reportMarkdown(t *transcript.Turn, full bool) string {
 }
 
 // writeReport saves a turn's report as markdown and returns the file's path.
-func writeReport(sessionID string, t *transcript.Turn, full bool) (string, error) {
+func writeReport(sessionID string, t *transcript.Turn, full bool, part int) (string, error) {
 	root := os.Getenv("HERDR_PLUGIN_STATE_DIR")
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "herdr-prompt-history")
@@ -146,12 +236,12 @@ func writeReport(sessionID string, t *transcript.Turn, full bool) (string, error
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("report-%03d.md", t.N)
+	name := fmt.Sprintf("report-%03d-%02d.md", t.N, part+1)
 	if full {
 		name = fmt.Sprintf("report-%03d-full.md", t.N)
 	}
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(reportMarkdown(t, full)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(reportMarkdown(t, full, part)), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil

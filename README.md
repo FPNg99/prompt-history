@@ -16,8 +16,11 @@ A [Herdr](https://herdr.dev) plugin that lists every prompt you sent in a Claude
 ## What it shows
 
 - **Prompts**: what you typed at the prompt, slash commands Claude answered, messages you sent while Claude was working (`↳`), and messages you typed when declining a tool call (`↳`).
-- **Report**: Claude's final answer for the selected prompt, rendered as markdown. `t` switches to the full turn: every text block plus the tool calls in between.
-- **Stats**: tool calls, files edited and duration per prompt.
+- **Reports**: one prompt often gets several reports, since Claude writes a message, runs tools, then writes again. The latest report shows by default. The selected prompt lists all of its reports, and `ctrl+j` / `ctrl+k` or a number key picks another one.
+- **Full turn**: `t` shows every report of the prompt in order, with the tool calls in between.
+- **Model**: each prompt shows the model it was sent to, in the list and in the report header. The header also names the model that wrote the shown report. In full-turn view it lists every model that took part, which is more than one if you switched model part-way.
+- **Stats**: tool calls, files edited, number of reports, tokens and duration per prompt.
+- **Tokens**: the report header breaks a prompt's token use into input (with the share read from cache) and output, summed over every request Claude made to answer it. Subagent usage is not included.
 - **Live**: the list follows the session while the popup is open.
 
 ## Install
@@ -37,9 +40,20 @@ key = "prefix+m"
 type = "plugin_action"
 command = "prompt-history.open"
 description = "prompt history"
+
+[[keys.command]]
+key = "prefix+shift+m"
+type = "plugin_action"
+command = "prompt-history.open-tab"
+description = "prompt history tab"
 ```
 
-The key opens the history of the Claude pane you are focused on. If focus is on a neighbour, such as an editor sidebar, it uses the tab's Claude pane when there is exactly one.
+There are two ways to open it:
+
+- **Popup** (`prompt-history.open`): floats over the current tab for a quick look; `q` or `esc` closes it.
+- **Tab** (`prompt-history.open-tab`): a tab of its own, labelled `prompt-history`, that stays open so you can switch between Claude and the history. Pressing the key again goes back to the tab already open for that session. `q` closes it; `esc` does not.
+
+Both open the history of the Claude pane you are focused on. If focus is on a neighbour, such as an editor sidebar, it uses the tab's Claude pane when there is exactly one.
 
 ## Keys
 
@@ -52,7 +66,9 @@ The key opens the history of the Claude pane you are focused on. If focus is on 
 | `ctrl+f` / `ctrl+b`, `pgdn` / `pgup` | scroll the report a page |
 | mouse wheel | scroll the pane under the pointer; a click focuses a pane or selects a prompt |
 | `/` | filter prompts by text; `enter` keeps the filter, `esc` clears it |
-| `t` | final answer / full turn |
+| `ctrl+k` / `ctrl+j` | previous / next report of the selected prompt (also `[` / `]`, `p` / `n`) |
+| `1`–`9` | jump to that report |
+| `t` | one report / full turn |
 | `enter` or `o` | open the report in nvim; `:q` returns to the list |
 | `y` | copy the report |
 | `q` / `esc` | close |
@@ -82,7 +98,8 @@ Herdr knows the Claude session id of each pane. The plugin finds that session's 
 go test ./...
 go build -o bin/herdr-prompt-history ./cmd/herdr-prompt-history
 bin/herdr-prompt-history dump --session <id>              # prompt list as text
-bin/herdr-prompt-history dump --session <id> --report 2   # one report
+bin/herdr-prompt-history dump --session <id> --report 2   # prompt 2's latest report
+bin/herdr-prompt-history dump --session <id> --report 2 --part 1   # its first report
 bin/herdr-prompt-history view --session <id>              # the viewer, in any terminal
 herdr plugin log list --plugin prompt-history             # action logs
 ```

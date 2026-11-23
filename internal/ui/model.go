@@ -25,6 +25,7 @@ type Options struct {
 	Path      string // the transcript file
 	SessionID string
 	PaneID    string // the Claude pane, for its working status; may be ""
+	Tab       bool   // shown in a tab of its own, not a popup
 	Config    Config
 	Dark      bool // the terminal has a dark background
 }
@@ -42,6 +43,7 @@ const (
 	rowLines    = 2
 	wheelLines  = 3
 	searchLines = 2 // the search line and the rule under it, atop the list
+	maxSubRows  = 8 // reports listed under the selected prompt at once
 )
 
 type pane int
@@ -77,6 +79,12 @@ type model struct {
 	flashUntil    time.Time
 	loadErr       error
 
+	// picked is the report chosen for a prompt, by index; a prompt without
+	// an entry shows its latest report.
+	picked map[*transcript.Turn]int
+	// hits maps each drawn list line to what a click on it selects.
+	hits []hit
+
 	renderer      *glamour.TermRenderer
 	rendererWidth int
 	shownKey      string
@@ -92,6 +100,7 @@ func newModel(opt Options) *model {
 		tail:   transcript.NewTailer(opt.Path),
 		filter: filter,
 		vp:     viewport.New(0, 0),
+		picked: map[*transcript.Turn]int{},
 	}
 	if _, err := m.tail.Poll(); err != nil {
 		m.loadErr = err
@@ -202,6 +211,11 @@ func (m *model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.applyFilter(m.selected(), false)
 			return m, nil
 		}
+		// A popup closes on esc; a tab stays until q, since esc is too easy
+		// to hit while reading.
+		if m.opt.Tab {
+			return m, nil
+		}
 		return m, tea.Quit
 	case "j", "down":
 		if m.focus == paneList {
@@ -256,6 +270,14 @@ func (m *model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "t":
 		m.full = !m.full
 		m.syncReport(true)
+	case "ctrl+k", "[", "p":
+		m.stepReport(-1)
+	case "ctrl+j", "]", "n":
+		m.stepReport(1)
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		if t := m.selected(); t != nil {
+			m.pick(t, int(msg.String()[0]-'1'))
+		}
 	case "enter", "o":
 		return m, m.openInEditor()
 	case "y":
@@ -297,15 +319,66 @@ func (m *model) updateMouse(msg tea.MouseMsg) {
 		}
 	case tea.MouseButtonLeft:
 		m.focus = target
-		// Rows start under the header line, the box's top border and the
+		// Lines start under the header line, the box's top border and the
 		// search line with its rule.
-		if row := msg.Y - 2 - searchLines; target == paneList && row >= 0 {
-			if i := m.top + row/rowLines; i < len(m.shown) {
-				m.cursor = i
+		if row := msg.Y - 2 - searchLines; target == paneList && row >= 0 && row < len(m.hits) {
+			h := m.hits[row]
+			if h.turn < len(m.shown) {
+				m.cursor = h.turn
+				if h.part >= 0 {
+					m.pick(m.shown[h.turn], h.part)
+				}
 				m.syncReport(false)
 			}
 		}
 	}
+}
+
+// hit is what a list line stands for: a prompt, or one of its reports.
+type hit struct {
+	turn int // index into shown
+	part int // report index, or -1 for the prompt's own lines
+}
+
+// part returns which report of a turn is shown, and how many it has. The
+// latest is shown unless the person picked another.
+func (m *model) part(t *transcript.Turn) (index, total int) {
+	total = len(t.Reports())
+	if total == 0 {
+		return 0, 0
+	}
+	if p, ok := m.picked[t]; ok && p < total {
+		return p, total
+	}
+	return total - 1, total
+}
+
+// pick shows one report of a turn. Picking the latest clears the choice, so
+// the view keeps following the turn as new reports arrive.
+func (m *model) pick(t *transcript.Turn, index int) {
+	total := len(t.Reports())
+	if index < 0 || index >= total {
+		return
+	}
+	if index == total-1 {
+		delete(m.picked, t)
+	} else {
+		m.picked[t] = index
+	}
+	m.full = false
+	m.syncReport(true)
+}
+
+func (m *model) stepReport(by int) {
+	t := m.selected()
+	if t == nil {
+		return
+	}
+	index, total := m.part(t)
+	if total == 0 {
+		return
+	}
+	m.pick(t, min(max(index+by, 0), total-1))
 }
 
 func (m *model) selected() *transcript.Turn {
@@ -367,7 +440,8 @@ func (m *model) openInEditor() tea.Cmd {
 	if t == nil {
 		return nil
 	}
-	path, err := writeReport(m.opt.SessionID, t, m.full)
+	part, _ := m.part(t)
+	path, err := writeReport(m.opt.SessionID, t, m.full, part)
 	if err != nil {
 		m.say("could not write the report: " + err.Error())
 		return nil
@@ -387,7 +461,8 @@ func (m *model) copyReport() {
 	if t == nil {
 		return
 	}
-	if err := copyToClipboard(answerOf(t, m.full)); err != nil {
+	part, _ := m.part(t)
+	if err := copyToClipboard(answerOf(t, m.full, part)); err != nil {
 		m.say("copy failed: " + err.Error())
 		return
 	}
@@ -428,8 +503,30 @@ func (m *model) layout() {
 	m.filter.Width = max(m.listWidth()-2-4, 5)
 }
 
-func (m *model) listRows() int {
-	return max((m.bodyHeight()-2-searchLines)/rowLines, 1)
+// subRows is the window of a turn's reports listed under it while it is
+// selected: none for a turn with a single report.
+func (m *model) subRows(t *transcript.Turn) (reports []transcript.Report, from, to int) {
+	reports = t.Reports()
+	if len(reports) < 2 {
+		return nil, 0, 0
+	}
+	to = len(reports)
+	if to > maxSubRows {
+		active, _ := m.part(t)
+		from = min(max(active-maxSubRows/2, 0), to-maxSubRows)
+		to = from + maxSubRows
+	}
+	return reports, from, to
+}
+
+// rowHeight is how many lines a prompt takes in the list.
+func (m *model) rowHeight(i int) int {
+	h := rowLines
+	if i == m.cursor {
+		_, from, to := m.subRows(m.shown[i])
+		h += to - from
+	}
+	return h
 }
 
 // ---- report ----
@@ -468,8 +565,9 @@ func (m *model) syncReport(toTop bool) {
 		m.vp.SetContent(dim.Render("No prompt selected."))
 		return
 	}
-	key := fmt.Sprintf("%p|%v|%d|%d|%v", t, m.full, m.vp.Width, len(t.Items), m.running(t))
-	turnKey := fmt.Sprintf("%p|%v", t, m.full)
+	part, _ := m.part(t)
+	turnKey := fmt.Sprintf("%p|%v|%d", t, m.full, part)
+	key := fmt.Sprintf("%s|%d|%d|%d|%v", turnKey, m.vp.Width, len(t.Items), t.Usage.Total(), m.running(t))
 	if key == m.shownKey {
 		return
 	}
@@ -485,6 +583,9 @@ func (m *model) syncReport(toTop bool) {
 		title += " · " + t.Time.Local().Format("Mon 2 Jan 15:04")
 	}
 	b.WriteString(bold.Width(w).Render(title) + "\n")
+	if model := t.Model(); model != "" {
+		b.WriteString(dim.Width(w).Render("prompted with "+model) + "\n")
+	}
 	if label := kindLabel(t.Kind); label != "" {
 		b.WriteString(dim.Width(w).Render(label) + "\n")
 	}
@@ -494,14 +595,21 @@ func (m *model) syncReport(toTop bool) {
 	if m.running(t) {
 		stats = "working… · " + stats
 	}
-	if m.full {
-		stats += " · full turn"
-	} else {
-		stats += " · final answer"
-	}
 	b.WriteString(dim.Width(w).Render(stats) + "\n")
+	if tokens := tokenLine(t); tokens != "" {
+		b.WriteString(dim.Width(w).Render(tokens) + "\n")
+	}
+	if label := partLabel(t, m.full, part); label != "" {
+		if _, total := m.part(t); total > 1 && !m.full {
+			label += "  (ctrl+j / ctrl+k switch)"
+		}
+		b.WriteString(accentText.Width(w).Render(label) + "\n")
+	}
+	if model := modelOf(t, m.full, part); model != "" {
+		b.WriteString(dim.Width(w).Render("answered by "+model) + "\n")
+	}
 	b.WriteString(dim.Render(strings.Repeat("─", w)) + "\n")
-	answer := answerOf(t, m.full)
+	answer := answerOf(t, m.full, part)
 	if strings.TrimSpace(answer) == "" {
 		b.WriteString(dim.Render("No answer yet."))
 	} else {
@@ -593,9 +701,9 @@ func (m *model) footerView() string {
 	if m.flash != "" && time.Now().Before(m.flashUntil) {
 		return " " + accentText.Render(m.flash)
 	}
-	keys := "j/k move · tab switch pane · d/u scroll report · / filter · t final/full · enter open in nvim · y copy · q close"
+	keys := "j/k move · ctrl+j/k pick report · tab switch pane · d/u scroll report · / filter · t full turn · enter open in nvim · y copy · q close"
 	if m.focus == paneReport {
-		keys = "j/k scroll · d/u half page · g/G top/bottom · wheel · tab back to list · t final/full · enter open in nvim · y copy · q close"
+		keys = "j/k scroll · d/u half page · ctrl+j/k pick report · g/G top/bottom · tab back to list · t full turn · enter open in nvim · y copy · q close"
 	}
 	return " " + dim.Render(runewidth.Truncate(keys, max(m.width-2, 1), "…"))
 }
@@ -617,23 +725,43 @@ func (m *model) searchView(w int) string {
 func (m *model) listView() string {
 	w := m.listWidth() - 2
 	search := m.searchView(w) + "\n"
+	m.hits = nil
 	if len(m.shown) == 0 {
 		if len(m.all) == 0 {
 			return search + dim.Render(" No prompts in this session yet.")
 		}
 		return search + dim.Render(" No prompt matches the filter.")
 	}
-	rows := m.listRows()
+	avail := max(m.bodyHeight()-2-searchLines, rowLines)
 	if m.cursor < m.top {
 		m.top = m.cursor
 	}
-	if m.cursor >= m.top+rows {
-		m.top = m.cursor - rows + 1
+	// Scroll down until the selected prompt and its reports fit.
+	for m.top < m.cursor {
+		used := 0
+		for i := m.top; i <= m.cursor; i++ {
+			used += m.rowHeight(i)
+		}
+		if used <= avail {
+			break
+		}
+		m.top++
 	}
-	m.top = min(m.top, max(len(m.shown)-rows, 0))
+	// Scroll back up while the rows from one higher would still all fit.
+	for m.top > 0 {
+		used := 0
+		for i := m.top - 1; i < len(m.shown); i++ {
+			used += m.rowHeight(i)
+		}
+		if used > avail {
+			break
+		}
+		m.top--
+	}
 
 	var lines []string
-	for i := m.top; i < len(m.shown) && i < m.top+rows; i++ {
+	var hits []hit
+	for i := m.top; i < len(m.shown) && len(lines) < avail; i++ {
 		t := m.shown[i]
 		isSel := i == m.cursor
 		mark := " "
@@ -650,7 +778,7 @@ func (m *model) listView() string {
 		}
 		head := fmt.Sprintf("#%-3d %s  %s", t.N, clock, text)
 		head = pad(runewidth.Truncate(head, w-1, "…"), w-1)
-		stats := turnStats(t)
+		stats := listStats(t)
 		if m.running(t) {
 			stats = "● working · " + stats
 		}
@@ -668,8 +796,47 @@ func (m *model) listView() string {
 		default:
 			lines = append(lines, mark+head, mark+dim.Render(sub))
 		}
+		hits = append(hits, hit{i, -1}, hit{i, -1})
+
+		if !isSel {
+			continue
+		}
+		// The selected prompt lists its reports; the shown one is marked.
+		reports, from, to := m.subRows(t)
+		active, _ := m.part(t)
+		for r := from; r < to; r++ {
+			pointer := " "
+			if r == active && !m.full {
+				pointer = "▸"
+			}
+			label := fmt.Sprintf("   %s %2d  %s", pointer, r+1, previewLine(reports[r].Text))
+			if r == len(reports)-1 {
+				label = fmt.Sprintf("   %s %2d  latest · %s", pointer, r+1, previewLine(reports[r].Text))
+			}
+			label = pad(runewidth.Truncate(label, w-1, "…"), w-1)
+			if r == active && !m.full {
+				lines = append(lines, accentText.Render(mark)+accentText.Bold(true).Render(label))
+			} else {
+				lines = append(lines, accentText.Render(mark)+dim.Render(label))
+			}
+			hits = append(hits, hit{i, r})
+		}
 	}
+	if len(lines) > avail {
+		lines, hits = lines[:avail], hits[:avail]
+	}
+	m.hits = hits
 	return search + strings.Join(lines, "\n")
+}
+
+// previewLine is a report's first line with its markdown markers dropped.
+func previewLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if s := strings.TrimSpace(strings.TrimLeft(line, "#>*-` \t")); s != "" {
+			return strings.ReplaceAll(s, "**", "")
+		}
+	}
+	return ""
 }
 
 func (m *model) reportView() string {

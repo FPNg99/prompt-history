@@ -121,16 +121,24 @@ func ActionContext() Context {
 	return c
 }
 
-// OpenViewer opens this plugin's viewer pane as a popup, passing env to it.
-func OpenViewer(env map[string]string) error {
+// Placements the viewer can open in.
+const (
+	PlacePopup = "popup" // floats over the current tab, closes when done
+	PlaceTab   = "tab"   // a tab of its own, to switch to and back
+)
+
+// OpenViewer opens this plugin's viewer pane, passing env to it, and returns
+// the new pane's id and its tab's.
+func OpenViewer(placement string, env map[string]string) (paneID, tabID string, err error) {
 	args := []string{
 		"plugin", "pane", "open",
 		"--plugin", PluginID,
 		"--entrypoint", "viewer",
-		"--placement", "popup",
-		"--width", "92%",
-		"--height", "92%",
+		"--placement", placement,
 		"--focus",
+	}
+	if placement == PlacePopup {
+		args = append(args, "--width", "92%", "--height", "92%")
 	}
 	for k, v := range env {
 		if v != "" {
@@ -139,9 +147,49 @@ func OpenViewer(env map[string]string) error {
 	}
 	out, err := exec.Command(bin(), args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("herdr plugin pane open: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", "", fmt.Errorf("herdr plugin pane open: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var reply any
+	if json.Unmarshal(out, &reply) == nil {
+		paneID, tabID = findString(reply, "pane_id"), findString(reply, "tab_id")
+	}
+	return paneID, tabID, nil
+}
+
+// findString searches decoded JSON depth-first for the first string under key.
+func findString(v any, key string) string {
+	switch x := v.(type) {
+	case map[string]any:
+		if s, ok := x[key].(string); ok && s != "" {
+			return s
+		}
+		for _, child := range x {
+			if s := findString(child, key); s != "" {
+				return s
+			}
+		}
+	case []any:
+		for _, child := range x {
+			if s := findString(child, key); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// FocusPluginPane brings one of this plugin's panes, and its tab, to the front.
+func FocusPluginPane(paneID string) error {
+	out, err := exec.Command(bin(), "plugin", "pane", "focus", paneID).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("herdr plugin pane focus: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// RenameTab sets a tab's label.
+func RenameTab(tabID, label string) {
+	_ = exec.Command(bin(), "tab", "rename", tabID, label).Run()
 }
 
 // Notify shows a Herdr notification.

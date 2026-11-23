@@ -27,6 +27,8 @@ const (
 // Item is one piece of a turn's answer, in the order Claude produced it.
 type Item struct {
 	Kind    ItemKind
+	Time    time.Time
+	Model   string // the model that produced it, when the transcript says
 	Text    string // ItemText: the markdown text
 	Tool    string // ItemTool: the tool's name
 	Summary string // ItemTool: a one-line summary of its input
@@ -50,20 +52,85 @@ type Turn struct {
 	Items  []Item
 	Tools  int
 	Files  []string // distinct files edited or written, in first-seen order
+	Usage  Usage    // tokens spent answering, summed over the turn's requests
 }
 
-// FinalAnswer is the text Claude closed the turn with: the last run of text
-// blocks, ignoring any tool calls that follow it.
+// Usage counts tokens as the API reports them for each request.
+type Usage struct {
+	Input      int // input tokens read fresh, not from the cache
+	CacheRead  int // input tokens read from the prompt cache
+	CacheWrite int // input tokens written to the prompt cache
+	Output     int // tokens Claude wrote, thinking included
+}
+
+// TotalInput is everything sent to the model: fresh, cached and newly cached.
+func (u Usage) TotalInput() int { return u.Input + u.CacheRead + u.CacheWrite }
+
+// Total is all tokens, in and out.
+func (u Usage) Total() int { return u.TotalInput() + u.Output }
+
+// Report is one thing Claude told the person during a turn: a run of text
+// blocks with no tool call in between. A turn with tool calls usually has
+// several, the last being its closing answer.
+type Report struct {
+	N           int       // 1-based position in the turn
+	Time        time.Time // when Claude started writing it
+	Text        string
+	Model       string // the model that wrote it
+	ToolsBefore int    // tool calls made since the previous report
+}
+
+// Reports splits the turn's answer at its tool calls.
+func (t *Turn) Reports() []Report {
+	var out []Report
+	tools := 0
+	open := false
+	for _, it := range t.Items {
+		if it.Kind == ItemTool {
+			tools++
+			open = false
+			continue
+		}
+		if open {
+			out[len(out)-1].Text += "\n\n" + it.Text
+			continue
+		}
+		out = append(out, Report{N: len(out) + 1, Time: it.Time, Text: it.Text, Model: it.Model, ToolsBefore: tools})
+		tools = 0
+		open = true
+	}
+	return out
+}
+
+// Models lists the distinct models that answered the turn, in first-used
+// order: more than one when the model was switched part-way.
+func (t *Turn) Models() []string {
+	var out []string
+	for _, it := range t.Items {
+		if it.Model != "" && !contains(out, it.Model) {
+			out = append(out, it.Model)
+		}
+	}
+	return out
+}
+
+// Model is the model the prompt was sent to: the one that began answering
+// it. Empty until the answer starts.
+func (t *Turn) Model() string {
+	if models := t.Models(); len(models) > 0 {
+		return models[0]
+	}
+	return ""
+}
+
+// FinalAnswer is the text Claude closed the turn with: its last report,
+// ignoring any tool calls that follow it.
 func (t *Turn) FinalAnswer() string {
-	i := len(t.Items) - 1
-	for i >= 0 && t.Items[i].Kind == ItemTool {
-		i--
+	reports := t.Reports()
+	if len(reports) == 0 {
+		return ""
 	}
-	var parts []string
-	for ; i >= 0 && t.Items[i].Kind == ItemText; i-- {
-		parts = append([]string{t.Items[i].Text}, parts...)
-	}
-	return strings.Join(parts, "\n\n")
+	return reports[len(reports)-1].Text
 }
 
 // FullAnswer is every text block of the turn in order, with each run of tool
@@ -119,11 +186,14 @@ func (t *Turn) FirstLine() string {
 type Parser struct {
 	turns []*Turn
 	seen  map[string]bool
+	// counted holds the API message ids whose usage is already added: one
+	// message is stored as several entries, each repeating its usage.
+	counted map[string]bool
 }
 
 // NewParser returns an empty parser.
 func NewParser() *Parser {
-	return &Parser{seen: map[string]bool{}}
+	return &Parser{seen: map[string]bool{}, counted: map[string]bool{}}
 }
 
 // Turns returns the turns worth showing, numbered from 1.
@@ -160,9 +230,18 @@ type entry struct {
 	IsSidechain      bool    `json:"isSidechain"`
 	IsCompactSummary bool    `json:"isCompactSummary"`
 	Timestamp        string  `json:"timestamp"`
+	ThinkingDisplay  string  `json:"thinkingDisplay"`
 	Origin           *origin `json:"origin"`
 	Message          *struct {
+		ID      string          `json:"id"`
+		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
+		Usage   *struct {
+			Input      int `json:"input_tokens"`
+			Output     int `json:"output_tokens"`
+			CacheRead  int `json:"cache_read_input_tokens"`
+			CacheWrite int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 	Attachment *struct {
 		Type        string          `json:"type"`
@@ -174,11 +253,12 @@ type entry struct {
 }
 
 type block struct {
-	Type    string          `json:"type"`
-	Text    string          `json:"text"`
-	Name    string          `json:"name"`
-	Input   json.RawMessage `json:"input"`
-	Content json.RawMessage `json:"content"`
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	Thinking string          `json:"thinking"`
+	Name     string          `json:"name"`
+	Input    json.RawMessage `json:"input"`
+	Content  json.RawMessage `json:"content"`
 }
 
 var relevant = [][]byte{
@@ -302,19 +382,43 @@ func (p *Parser) feedAssistant(e *entry, ts time.Time) bool {
 		return false
 	}
 	t := p.turns[len(p.turns)-1]
+	model := e.Message.Model
+	if strings.HasPrefix(model, "<") {
+		// A placeholder such as "<synthetic>": the harness wrote the
+		// message, no model did.
+		model = ""
+	}
 	_, blocks := decodeContent(e.Message.Content)
 	changed := false
+	if u := e.Message.Usage; u != nil && model != "" && e.Message.ID != "" && !p.counted[e.Message.ID] {
+		p.counted[e.Message.ID] = true
+		t.Usage.Input += u.Input
+		t.Usage.Output += u.Output
+		t.Usage.CacheRead += u.CacheRead
+		t.Usage.CacheWrite += u.CacheWrite
+		changed = true
+	}
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
 			if strings.TrimSpace(b.Text) == "" {
 				continue
 			}
-			t.Items = append(t.Items, Item{Kind: ItemText, Text: strings.TrimSpace(b.Text)})
+			t.Items = append(t.Items, Item{Kind: ItemText, Time: ts, Model: model, Text: strings.TrimSpace(b.Text)})
+			changed = true
+		case "thinking":
+			// In "updates" display mode Claude Code stores a progress
+			// message written just before a tool call as a thinking block
+			// with text. Real reasoning is stored empty, and in any other
+			// mode a thinking block is not something the person was told.
+			if e.ThinkingDisplay != "updates" || strings.TrimSpace(b.Thinking) == "" {
+				continue
+			}
+			t.Items = append(t.Items, Item{Kind: ItemText, Time: ts, Model: model, Text: strings.TrimSpace(b.Thinking)})
 			changed = true
 		case "tool_use":
 			summary, file := summarizeInput(b.Name, b.Input)
-			t.Items = append(t.Items, Item{Kind: ItemTool, Tool: b.Name, Summary: summary})
+			t.Items = append(t.Items, Item{Kind: ItemTool, Time: ts, Model: model, Tool: b.Name, Summary: summary})
 			t.Tools++
 			if file != "" && !contains(t.Files, file) {
 				t.Files = append(t.Files, file)

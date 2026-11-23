@@ -13,8 +13,18 @@ title = "prompt history: open"
 contexts = ["pane"]
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" open"]
 
-# The popup: prompt list on the left, the selected prompt's report on the
-# right. The session comes in PH_SESSION_ID, set by the open action.
+# The same viewer in a tab of its own, to switch to and back while Claude
+# keeps the main tab. Pressing it again returns to the tab already open for
+# that session.
+[[actions]]
+id = "open-tab"
+title = "prompt history: open in a tab"
+contexts = ["pane"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" open-tab"]
+
+# The viewer: prompt list on the left, the selected prompt's report on the
+# right. The session comes in PH_SESSION_ID, set by the open actions, which
+# also choose the placement (popup or tab).
 [[panes]]
 id = "viewer"
 title = "prompt history"

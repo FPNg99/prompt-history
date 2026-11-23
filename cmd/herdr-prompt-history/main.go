@@ -1,8 +1,10 @@
 // herdr-prompt-history lists the prompts of a Claude Code session and shows
 // the report Claude gave for each one. It runs as a Herdr plugin.
 //
-//	open   the plugin action: find the focused pane's Claude session and
-//	       open the viewer for it in a popup
+//	open      the plugin action: find the focused pane's Claude session and
+//	          open the viewer for it in a popup
+//	open-tab  the same, in a tab of its own; a second press goes back to
+//	          the tab already open for that session
 //	view   the popup itself
 //	dump   print the prompt list, or one report, as plain text
 package main
@@ -12,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -31,7 +34,9 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "open":
-		err = runOpen()
+		err = runOpen(herdr.PlacePopup)
+	case "open-tab":
+		err = runOpen(herdr.PlaceTab)
 	case "view":
 		err = runView(os.Args[2:])
 	case "dump":
@@ -50,15 +55,25 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
-  herdr-prompt-history open
+  herdr-prompt-history open | open-tab
   herdr-prompt-history view [--session ID | --file PATH] [--pane PANE_ID]
-  herdr-prompt-history dump [--session ID | --file PATH] [--report N] [--full]
+  herdr-prompt-history dump [--session ID | --file PATH] [--report N [--part K | --full]]
 `)
+}
+
+// tabRecord is where the viewer tab opened for a session is remembered, so a
+// second press of the key returns to it.
+func tabRecord(sessionID string) string {
+	root := os.Getenv("HERDR_PLUGIN_STATE_DIR")
+	if root == "" {
+		root = filepath.Join(os.TempDir(), "herdr-prompt-history")
+	}
+	return filepath.Join(root, "tabs", sessionID+".pane")
 }
 
 // runOpen is the plugin action. Problems are shown as a Herdr notification,
 // since an action has no terminal of its own.
-func runOpen() error {
+func runOpen(placement string) error {
 	fail := func(body string) error {
 		herdr.Notify(title, body)
 		return errors.New(body)
@@ -94,11 +109,33 @@ func runOpen() error {
 	if _, err := transcript.Locate(pane.SessionID); err != nil {
 		return fail(err.Error())
 	}
-	if err := herdr.OpenViewer(map[string]string{
+	record := tabRecord(pane.SessionID)
+	if placement == herdr.PlaceTab {
+		// Pane ids are never reused, so a recorded pane that still exists is
+		// this session's viewer tab.
+		if raw, err := os.ReadFile(record); err == nil {
+			if id := strings.TrimSpace(string(raw)); id != "" {
+				if _, err := herdr.GetPane(id); err == nil && herdr.FocusPluginPane(id) == nil {
+					return nil
+				}
+			}
+		}
+	}
+	paneID, tabID, err := herdr.OpenViewer(placement, map[string]string{
 		"PH_SESSION_ID": pane.SessionID,
 		"PH_PANE_ID":    pane.ID,
-	}); err != nil {
+		"PH_PLACEMENT":  placement,
+	})
+	if err != nil {
 		return fail(err.Error())
+	}
+	if placement == herdr.PlaceTab && paneID != "" {
+		if tabID != "" {
+			herdr.RenameTab(tabID, "prompt-history")
+		}
+		if os.MkdirAll(filepath.Dir(record), 0o700) == nil {
+			_ = os.WriteFile(record, []byte(paneID+"\n"), 0o600)
+		}
 	}
 	return nil
 }
@@ -145,6 +182,7 @@ func runView(args []string) error {
 		Path:      path,
 		SessionID: sessionID,
 		PaneID:    *pane,
+		Tab:       os.Getenv("PH_PLACEMENT") == herdr.PlaceTab,
 		Config:    ui.LoadConfig(),
 		Dark:      lipgloss.HasDarkBackground(),
 	})
@@ -156,6 +194,7 @@ func runDump(args []string) error {
 	file := fs.String("file", "", "transcript file")
 	report := fs.Int("report", 0, "print this prompt's report instead of the list")
 	full := fs.Bool("full", false, "with --report: the full turn, not only the final answer")
+	part := fs.Int("part", 0, "with --report: which of the prompt's reports (default: the latest)")
 	fs.Parse(args)
 
 	path, _, err := resolve(*session, *file)
@@ -172,9 +211,15 @@ func runDump(args []string) error {
 			return fmt.Errorf("no prompt #%d (the session has %d)", *report, len(turns))
 		}
 		t := turns[*report-1]
-		if *full {
+		reports := t.Reports()
+		switch {
+		case *full:
 			fmt.Println(t.FullAnswer())
-		} else {
+		case *part > len(reports):
+			return fmt.Errorf("prompt #%d has %d reports", *report, len(reports))
+		case *part > 0:
+			fmt.Println(reports[*part-1].Text)
+		default:
 			fmt.Println(t.FinalAnswer())
 		}
 		return nil
@@ -184,8 +229,8 @@ func runDump(args []string) error {
 		if !t.Time.IsZero() {
 			clock = t.Time.Local().Format("15:04")
 		}
-		fmt.Printf("#%-3d %s  %-7s %3d tools %2d files  %s\n",
-			t.N, clock, t.Kind, t.Tools, len(t.Files), clip(t.FirstLine(), 90))
+		fmt.Printf("#%-3d %s  %-7s %3d tools %2d files %2d reports  %s\n",
+			t.N, clock, t.Kind, t.Tools, len(t.Files), len(t.Reports()), clip(t.FirstLine(), 80))
 	}
 	return nil
 }
