@@ -25,7 +25,9 @@ A [Herdr](https://herdr.dev) plugin that lists every prompt you sent in a Claude
 
 ## Install
 
-Needs Herdr 0.9 or later, and [Go](https://go.dev/dl) to build it: the install step compiles the plugin on your machine, and Herdr does not install Go for you.
+Needs Herdr 0.9 or later.
+
+The install step downloads a prebuilt binary for macOS (Apple silicon or Intel) and Linux (x64 or arm64) from this repo's releases and verifies its checksum. If [Go](https://go.dev/dl) is installed, it builds from source instead.
 
 ```sh
 herdr plugin install FPNg99/prompt-history
@@ -97,6 +99,10 @@ Without nvim it falls back to `$VISUAL`, `$EDITOR`, then `vim`.
 ## How it works
 
 Herdr knows the Claude session id of each pane. The plugin finds that session's transcript under `$CLAUDE_CONFIG_DIR/projects` or any `~/.claude*/projects` directory and reads it; it only ever reads that file. The transcript format is not documented by Claude Code, so a Claude Code update can break the parsing.
+
+## Releases
+
+Every merge to `main` runs the tests, then builds the binaries and attaches them to the GitHub release named after the `version` in `herdr-plugin.toml`. Bumping that version creates a new release; a merge that keeps it replaces the binaries of the current one, so they always match `main`. Pull requests run the tests only.
 
 ## Develop
 
